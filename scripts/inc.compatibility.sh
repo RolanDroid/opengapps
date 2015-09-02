@@ -17,8 +17,8 @@ cameracompatibilityhack(){
   fi
 }
 
-keyboardlibhack(){ #only on lollipop
-  if [ "$API" -gt "19" ] && [ "$FALLBACKARCH" = "arm" ]; then #only on lollipop extra gestures for AOSP keyboard:
+keyboardlibhack(){ #only on lollipop and higher
+  if [ "$API" -gt "19" ] && [ "$FALLBACKARCH" = "arm" ]; then
     gappsoptional="keybdlib $gappsoptional"
     REQDLIST="/system/lib/libjni_latinime.so
 /system/lib/libjni_latinimegoogle.so
@@ -136,8 +136,10 @@ kitkatpathshack(){
 
 systemlibhack(){
   case "$package" in
-    #webview should have its library in /system/lib and /system/lib64 instead of /system/app/WebViewGoogle/lib/ARCH
-    com.google.android.webview) systemlib="true";;
+    com.google.android.webview) if [ "$API" -lt "23" ]; then #webview libs are only on /system/lib/ on pre-Marshmallow
+                                  systemlib="true"
+                                fi;;
+#    com.android.chrome)         systemlib="true";; #normally chrome would also be systemwide, but currently we don't do this because it is complicated with it .so versioning
     *) systemlib="false";;
   esac
 }
@@ -146,6 +148,7 @@ universalremoverhack(){
   if [ "$API" -le "19" ]; then
     tee -a "$build/META-INF/com/google/android/update-binary" > /dev/null <<'EOFILE'
                     1)  user_remove_folder_list="${user_remove_folder_list}$(find "$folder" -type f -iname "$testapk")"$'\n'; # Add found file to list
+                        user_remove_folder_list="${user_remove_folder_list}$(printf "$(find "$folder" -type f -iname "$testapk")" | rev | cut -c 4- | rev)odex"$'\n'; # Add odex to list
 EOFILE
   else
     tee -a "$build/META-INF/com/google/android/update-binary" > /dev/null <<'EOFILE'
