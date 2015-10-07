@@ -17,6 +17,8 @@ if { [ "$1" != "arm" ] && [ "$1" != "arm64" ] && [ "$1" != "x86" ] && [ "$1" != 
   echo "Usage: $0 (arm|arm64|x86|x86_64) API_LEVEL"
   exit 1
 fi
+
+command -v realpath >/dev/null 2>&1 || { echo "realpath is required but it's not installed, aborting." >&2; exit 1; }
 DATE=$(date +"%Y%m%d")
 TOP="$(realpath .)"
 ARCH="$1"
@@ -27,6 +29,7 @@ CACHE="$TOP/cache"
 OUT="$TOP/out"
 SOURCES="$TOP/sources"
 SCRIPTS="$TOP/scripts"
+CERTIFICATES="$SCRIPTS/certificates"
 . "$SCRIPTS/inc.aromadata.sh"
 . "$SCRIPTS/inc.buildhelper.sh"
 . "$SCRIPTS/inc.buildtarget.sh"
@@ -34,17 +37,10 @@ SCRIPTS="$TOP/scripts"
 . "$SCRIPTS/inc.installdata.sh"
 . "$SCRIPTS/inc.packagetarget.sh"
 . "$SCRIPTS/inc.updatebinary.sh"
+. "$SCRIPTS/inc.tools.sh"
 
-#####---------CHECK FOR EXISTANCE OF SOME BINARIES---------
-command -v aapt >/dev/null 2>&1 || { echo "aapt is required but it's not installed.  Aborting." >&2; exit 1; }
-command -v install >/dev/null 2>&1 || { echo "coreutils is required but it's not installed.  Aborting." >&2; exit 1; } #coreutils also contains the basename command
-command -v java >/dev/null 2>&1 || { echo "java is required but it's not installed.  Aborting." >&2; exit 1; } #necessary to use signapk
-command -v md5sum >/dev/null 2>&1 || { echo "md5sum is required but it's not installed.  Aborting." >&2; exit 1; }
-command -v unzip >/dev/null 2>&1 || { echo "unzip is required but it's not installed.  Aborting." >&2; exit 1; }
-command -v zip >/dev/null 2>&1 || { echo "zip is required but it's not installed.  Aborting." >&2; exit 1; }
-command -v zipalign >/dev/null 2>&1 || { echo "zipalign is required but it's not installed.  Aborting." >&2; exit 1; }
-command -v tar >/dev/null 2>&1 || { echo "tar is required but it's not installed.  Aborting." >&2; exit 1; }
-command -v xz >/dev/null 2>&1 || { echo "xz is required but it's not installed.  Aborting." >&2; exit 1; }
+# Check tools
+checktools aapt coreutils java jarsigner unzip zip tar xz realpath zipalign
 
 case "$API" in
   19) PLATFORM="4.4";;
@@ -61,17 +57,17 @@ SUPPORTEDVARIANTS="$supported_variants"
 if [ -z "$SUPPORTEDVARIANTS" ]; then
   echo "ERROR: Unknown variant! aborting..."; exit 1
 fi
-if [ "$FALLBACKARCH" != "arm" ]; then #For all non-arm(64) platforms
+if [ "$ARCH" != "arm" ] && [ "$ARCH" != "arm64" ]; then #For all non-arm(64) platforms
   case "$VARIANT" in
-    aroma|fornexus) echo "ERROR! Variant $VARIANT cannot be built on a non-arm platform";
-    exit 1;;
+    aroma) echo "ERROR! Variant $VARIANT cannot be built on a non-arm platform";exit 1;;
+    stock|full) if [ "$API" -lt "21" ];then echo "ERROR! Variant $VARIANT cannot be built on a non-arm < 5.0 platform";exit 1;fi;; #because system wide libs will probably not work with libhoudini
   esac
 fi
 
 kitkatpathshack	#kitkat has different apk and lib paths which impact installer.data
 kitkatdatahack #kitkat installs some applications on /data/ instead of /system/
 taghack #only 5.0+ supports google tag
-webviewhack #only 5.1+ supports google webview (but fornexus 5.0 does too)
+webviewhack #only 5.1+ supports google webview (Stock Google 5.0 ROMs too, but we merged stock and fornexus)
 keyboardlibhack #only 5.0+ has gestures for the aosp keyboard possible, which impact installer.data and an extra file in the package
 buildtarget
 alignbuild

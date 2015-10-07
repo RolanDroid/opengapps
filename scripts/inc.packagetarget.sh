@@ -10,11 +10,10 @@
 #	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #	GNU General Public License for more details.
 #
-CERTIFICATES="$SCRIPTS/certificates"
 alignbuild() {
   for f in $(find "$build" -name '*.apk'); do
     mv "$f" "$f.orig"
-    zipalign 4 "$f.orig" "$f"
+    zipalign -f -p 4 "$f.orig" "$f" #consider recompression with Zopfli using -z for production use
     rm "$f.orig"
   done
 }
@@ -36,7 +35,7 @@ commonscripts() {
 aromascripts() {
   aromaupdatebinary
   makearomaconfig
-  install -d "$build/META-INF/com/google/android/aroma #not necessary, but is safe"
+  install -d "$build/META-INF/com/google/android/aroma" #not necessary, but is safe
   copy "$SCRIPTS/aroma-resources/fonts" "$build/META-INF/com/google/android/aroma/fonts"
   copy "$SCRIPTS/aroma-resources/icons" "$build/META-INF/com/google/android/aroma/icons"
   copy "$SCRIPTS/aroma-resources/langs" "$build/META-INF/com/google/android/aroma/langs"
@@ -56,15 +55,52 @@ aromaupdatebinary() {
 }
 
 bundlexz() {
-  if [ "$FALLBACKARCH" = "arm" ]; then #For all arm-based platforms we can include our own xz-decompression binary
+  if [ "$ARCH" = "arm" ] || [ "$ARCH" = "arm64" ]; then #For all arm-based platforms we can include our own xz-decompression binary
     copy "$SCRIPTS/xz-resources/xzdec-arm" "$build/xzdec"
     EXTRACTFILES="$EXTRACTFILES xzdec"
   fi
 }
 
+createxz() {
+      hash="$(tar -cf - "$f" | md5sum | cut -f1 -d' ')"
+
+      if [ -f "$CACHE/$hash.tar.xz" ]; then #we have this xz in cache
+        echo "Fetching $d$f from the cache"
+        rm -rf "$f" #remove the folder
+        cp "$CACHE/$hash.tar.xz" "$f.tar.xz" #copy from the cache
+      else
+        echo "Thread: $threads | FreeRAM: $memory | Compressing Package: $d$f"
+        XZ_OPT=-9e tar --remove-files -cJf "$f.tar.xz" "$f"
+        if [ $? != 0 ]; then
+          echo "ERROR: XZ compression failed, aborting."
+          exit 1
+        fi
+        cp "$f.tar.xz" "$CACHE/$hash.tar.xz" #copy into the cache
+      fi
+      touch -d "2008-02-28 21:33:46.000000000 +0100" "$f.tar.xz"
+      sync
+}
+
 createzip() {
   find "$build" -exec touch -d "2008-02-28 21:33:46.000000000 +0100" {} \;
   cd "$build"
+
+  MEMORY_MIN=800000 # Minimum of RAM required (for single thread) on x86_64 machine [~701MB for xz, 2*25KB for bash and some spare]
+  THREADS="$(($(nproc)))"
+
+  if ! grep -q "MemAvailable:" /proc/meminfo; then
+    MEMORY=0
+  else
+    MEMORY="$(($(grep "MemAvailable:" /proc/meminfo | awk '{print $2}') / 4))"
+  fi
+
+  if [ $MEMORY = 0 ] || [ $MEMORY -lt $MEMORY_MIN ]; then
+    echo "WARNING: Can't establish if enough free memory is available: parallel compression mode disabled."
+    MEMORY=0
+    THREADS=1
+  fi
+
+  pidlist=""
   for d in $(ls -d */ | grep -v "META-INF"); do #notice that d will end with a slash, ls is safe here because there are no directories with spaces
     cd "$build/$d"
     for f in $(ls); do # ls is safe here because there are no directories with spaces
@@ -72,19 +108,45 @@ createzip() {
         foldersize="$(du -ck "$f/$g/" | tail -n1 | awk '{ print $1 }')"
         printf "%s\t%s\t%d\n" "$f" "$g" "$foldersize" >> "$build/app_sizes.txt"
       done
-      hash="$(tar -cf - "$f" | md5sum | cut -f1 -d' ')"
-      if [ -f "$CACHE/$hash.tar.xz" ]; then #we have this xz in cache
-        echo "Fetching $d$f from the cache"
-        rm -rf "$f" #remove the folder
-        cp "$CACHE/$hash.tar.xz" "$f.tar.xz" #copy from the cache
+
+      # Use parallel mode only if we have memory metric and have more then 1 CPU
+      if [ $THREADS -gt 1 ] && [ $MEMORY -gt 0 ]; then
+        # Wait if we reached RAM or THREADS limit
+        tries=0; while true; do
+          # Count still running createxz instances
+          threads=0; for p in $pidlist; do test -d /proc/$p && threads=$((threads+1)); done
+          memory=$(grep "MemAvailable:" /proc/meminfo | awk '{print $2}')
+
+          # Check if reached our limits (3/4 of RAM or THREADS), wait if we are
+          if [ $threads -ge $THREADS ] || [ $MEMORY -ge $memory ] || [ $memory -lt $MEMORY_MIN ]; then
+            sleep 5
+            # Update tries counter
+            tries=$((tries+1))
+            # If we are trying for more then 180*5 seconds, we bail out (in case machine is to low on memory or CPU we won't run forever!)
+            if [ $tries -gt 180 ]; then
+              echo "Seems like this machine is too slow or was unable to collect enought usable memory for compression, aborting."
+              exit 1
+            fi
+            continue
+          else
+            break
+         fi
+        done
+
+        # Spawn xz creation
+        createxz $d &
+        # Collect resulting PID
+        pidlist="$pidlist $!"
       else
-        echo "Compressing $d$f"
-        XZ_OPT=-9e tar --remove-files -cJf "$f.tar.xz" "$f"
-        cp "$f.tar.xz" "$CACHE/$hash.tar.xz" #copy into the cache
+        # Call xz creation
+        createxz $d
       fi
-      touch -d "2008-02-28 21:33:46.000000000 +0100" "$f.tar.xz"
     done
   done
+
+  echo "Waiting for components to be prepared..."
+  for p in $pidlist; do wait $p; done
+  echo "All components are ready."
 
   unsignedzip="$BUILD/$ARCH/$API/$VARIANT.zip"
   signedzip="$OUT/open_gapps-$ARCH-$PLATFORM-$VARIANT-$DATE.zip"
@@ -107,7 +169,7 @@ signzip() {
     rm "$signedzip"
   fi
 
-  if java -Xmx2048m -jar "$SCRIPTS/inc.signapk.jar" -w "$CERTIFICATES/testkey.x509.pem" "$CERTIFICATES/testkey.pk8" "$unsignedzip" "$signedzip"; then #if signing did succeed
+  if java -Xmx3072m -jar "$SCRIPTS/inc.signapk.jar" -w "$CERTIFICATES/testkey.x509.pem" "$CERTIFICATES/testkey.pk8" "$unsignedzip" "$signedzip"; then #if signing did succeed
     rm "$unsignedzip"
   else
     echo "ERROR: Creating Flashable ZIP-file failed, unsigned file can be found at $unsignedzip"

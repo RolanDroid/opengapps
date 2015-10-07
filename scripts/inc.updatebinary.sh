@@ -1,4 +1,5 @@
 makeupdatebinary(){
+get_fallback_arch "$ARCH" #make sure that $fallback_arch will be available
 echo '#!/sbin/ash
 #This file is part of The Open GApps script of @mfonville.
 #
@@ -89,7 +90,7 @@ contains() {
 }
 
 clean_inst() {
-  if [ -f /data/system/packages.xml ]; then
+  if [ -f /data/system/packages.xml ] && [ "$forceclean" != "true" ]; then
     return 1;
   fi;
   return 0;
@@ -272,10 +273,6 @@ sys_app() {
   return 1;
 }
 
-is_in_system() {
-  { [ -n "$(find /system/app -name "$1.apk" 2>/dev/null)" ] || [ -n "$(find /system/priv-app -name "$1.apk" 2>/dev/null)" ]; };
-}
-
 ui_print() {
   echo "ui_print $1" > "$OUTFD";
   echo "ui_print" > "$OUTFD";
@@ -293,8 +290,17 @@ which_dpi() {
       *)            dpiapkpath="unknown";;
     esac;
   done;
+  # Check if density is unknown or set to nopdi and there is not a universal package and select the package with higher density.
+  if { [ "$density" = "unknown" ] || [ "$density" = "nopdi" ]; } && [ "$dpiapkpath" = "unknown" ] && [ -n "$app_densities" ]; then
+    app_densities="$(echo "$app_densities" | sort -r)"
+    for densities in $app_densities; do
+      dpiapkpath="$1/$densities";
+      break;
+    done;
+  fi;
   # If there is no package for our density nor a universal one, we will look for the one with closer, but higher density.
   if [ "$dpiapkpath" = "unknown" ] && [ -n "$app_densities" ]; then
+    app_densities="$(echo "$app_densities" | sort)"
     for densities in $app_densities; do
       all_densities="$(echo "$densities" | sed 's/-/ /g' | tr ' ' '\n' | sort | tr '\n' ' ')";
       for d in $all_densities; do
@@ -342,16 +348,35 @@ ui_print '##############################';
 ui_print " ";
 ui_print "$installer_name$gapps_version";
 ui_print " ";
-ui_print "- Mounting /system, /data, /cache, /persist";
+ui_print "- Mounting /system, /cache, /data, /persist";
 ui_print " ";
 set_progress 0.01;
-busybox mount /system;
-busybox mount /data;
-busybox mount /cache;
-busybox mount /persist;
-busybox mount -o rw,remount /system;
+mount /system;
+mount /cache;
+mount /data;
+mount /persist;
+mount -o rw,remount /system;
+mount -o rw,remount /system /system;
+mount -o rw,remount /;
+mount -o rw,remount / /;
 # _____________________________________________________________________________________________________________________
 #                                                  Gather Device & GApps Package Information
+# Check if build.prop is not compressed and thus unprocessable
+if [ "$(head -c4 "$b_prop")" = "zzzz" ]; then
+  ui_print "*** Recovery does not support transparent compression ***";
+  ui_print " ";
+  ui_print "Your ROM uses transparent compression, but your recovery";
+  ui_print "does not support this feature, resulting in corrupt files.";
+  ui_print " ";
+  ui_print "BEFORE INSTALLING ANYTHING ANYMORE YOU SHOULD UPDATE YOUR";
+  ui_print "RECOVERY AS SOON AS POSSIBLE, TO PREVENT FILE CORRUPTION.";
+  ui_print " ";
+  ui_print "******* GApps Installation failed *******";
+  ui_print " ";
+  install_note="${install_note}recovery_compression_msg"$'\n'; # make note that recovery does not support transparent compression
+  abort "$E_RECCOMPR";
+fi
+
 # Get device name any which way we can
 for field in ro.product.device ro.build.product ro.product.name; do
   for file in $b_prop /default.prop; do
@@ -386,13 +411,15 @@ if [ "$g_conf" ]; then
   config_file="$g_conf";
   g_conf_orig="$g_conf";
   # Create processed gapps-config with user comments stripped and user app removals removed and stored in variable for processing later
-  g_conf=/tmp/proc_gconf;
-  sed -e 's|#.*||g' -e 's/\r//g' -e '/^$/d'  "$g_conf_orig" > $g_conf; # Strip user comments from gapps-config
-  user_remove_list=$(awk -F "[()]" '{ for (i=2; i<NF; i+=2) print $i }' $g_conf); # Get users list of apk's to remove from gapps-config
-  sed -i s/'([^)]*)'/''/g $g_conf; # Remove all instances of user app removals (stuff between parentheses)
-  sed -i '/^$/d' $g_conf; # Remove all empty lines for cleaner appearance
+  g_conf="/tmp/proc_gconf";
+  sed -e 's|#.*||g' -e 's/\r//g' -e '/^$/d'  "$g_conf_orig" > "$g_conf"; # Strip user comments from gapps-config
+  user_remove_list=$(awk -F "[()]" '{ for (i=2; i<NF; i+=2) print $i }' "$g_conf"); # Get users list of apk's to remove from gapps-config
+  sed -i s/'([^)]*)'/''/g "$g_conf"; # Remove all instances of user app removals (stuff between parentheses)
+  sed -i '/^$/d' "$g_conf"; # Remove all empty lines for cleaner appearance
 else
   config_file="Not Used";
+  g_conf="/tmp/proc_gconf";
+  touch "$g_conf";
 fi;
 
 # Unless this is a NoDebug install - create folder and take 'Before' snapshots
@@ -503,10 +530,10 @@ case "$EXTRACTFILES" in
   ui_print "binary. Please update your recovery";
   ui_print "to the latest version or switch to";
   ui_print "another recovery like TWRP.";
-  ui_print "See:'$log_folder/open_gapps_log.txt'";
+  ui_print "See:'"'"'$log_folder/open_gapps_log.txt'"'"'";
   ui_print "for complete details and information.";
   ui_print " ";
-  install_note="${install_note}no_xz_message"$'\n'; # make note that there is no XZ support
+  install_note="${install_note}no_xz_message"$'"'\n'"'; # make note that there is no XZ support
   abort "$E_XZ";'>> "$build/META-INF/com/google/android/update-binary";;
 esac
 echo 'else'>> "$build/META-INF/com/google/android/update-binary"
@@ -516,6 +543,18 @@ else
   echo '  bundled_xz=false'>> "$build/META-INF/com/google/android/update-binary"
 fi
 tee -a "$build/META-INF/com/google/android/update-binary" > /dev/null <<'EOFILE'
+fi;
+# Check for the -f - tar support
+if [ -z "$(tar --help 2>&1 | grep -e "f.*stdin")" ]; then
+  ui_print "Your recovery does not support stdin";
+  ui_print "for the tar binary. Please update your";
+  ui_print "recovery to the latest version or";
+  ui_print "switch to another recovery like TWRP.";
+  ui_print "See:'"'"'$log_folder/open_gapps_log.txt'"'"'";
+  ui_print "for complete details and information.";
+  ui_print " ";
+  install_note="${install_note}no_stdin_message"$'"'\n'"'; # make note that there is no stdin tar support
+  abort "$E_STDIN";
 fi;
 
 # Get display density using getprop from Recovery
@@ -534,9 +573,23 @@ case $density in
 esac;
 
 # Check for DPI Override in gapps-config
-if ( grep -qiE "forcedpi(120|160|213|240|280|320|400|480|560|640)" $g_conf ); then # user wants to override the DPI selection
-  density=$( grep -iEo "forcedpi(120|160|213|240|280|320|400|480|560|640)" $g_conf | tr '[:upper:]'  '[:lower:]' );
+if ( grep -qiE "forcedpi(120|160|213|240|280|320|400|480|560|640|nodpi)" "$g_conf" ); then # user wants to override the DPI selection
+  density=$( grep -iEo "forcedpi(120|160|213|240|280|320|400|480|560|640|nodpi)" "$g_conf" | tr '[:upper:]'  '[:lower:]' );
   density=${density#forcedpi};
+fi;
+
+# Check for Clean Override in gapps-config
+if ( grep -qiE "^forceclean$" "$g_conf" ); then # true or false to override the default selection
+  forceclean="true"
+else
+  forceclean="false"
+fi;
+
+# Check for keybdlib Override in gapps-config
+if ( grep -qiE "^skipkeybdlib$" $g_conf ); then # true or false to override the default selection
+  skipkeybdlib="true"
+else
+  skipkeybdlib="false"
 fi;
 
 # Set density to unknown if it's still empty
@@ -620,33 +673,39 @@ if [ -e /system/priv-app/GoogleServicesFramework/GoogleServicesFramework.apk -a 
     else
       log "Current Open GApps Package" "Unknown";
     fi;
-  else
-EOFILE
-
-if [ "$VARIANT" = "fornexus" ]; then
-  echo '    log "Current GApps Version" "NON Open GApps Currently Installed";'>> "$build/META-INF/com/google/android/update-binary"
-else
-  echo '    log "Current GApps Version" "NON Open GApps Currently Installed (FAILURE)";
+  elif [ -e /system/etc/g.prop ]; then
+    log "Current GApps Version" "NON Open GApps Package Currently Installed (FAILURE)";
     ui_print "* Incompatible GApps Currently Installed *";
     ui_print " ";
     ui_print "This Open GApps package can ONLY be installed";
     ui_print "on top of an existing installation of Open GApps";
-    ui_print "or a clean AOSP/CyanogenMod ROM installation.";
+    ui_print "or a clean AOSP/CyanogenMod ROM installation,";
+    ui_print "or a Stock ROM that conforms to Nexus standards.";
     ui_print "You must wipe (format) your system partition";
-    ui_print "BEFORE installing the Open GApps package.";
+    ui_print "and flash your ROM BEFORE installing Open GApps.";
     ui_print " ";
     ui_print "******* GApps Installation failed *******";
     ui_print " ";
-    install_note="${install_note}non_open_gapps_msg"'"$'\n'"'; # make note that currently installed GApps are non-Open
-    abort "$E_NONOPEN";'>> "$build/META-INF/com/google/android/update-binary"
-fi
-
-tee -a "$build/META-INF/com/google/android/update-binary" > /dev/null <<'EOFILE'
+    install_note="${install_note}non_open_gapps_msg"$'\n'; # make note that currently installed GApps are non-Open
+    abort "$E_NONOPEN";
+  else
+    log "Current GApps Version" "Stock ROM GApps Currently Installed (NOTICE)";
+    ui_print "* Stock ROM GApps Currently Installed *";
+    ui_print " ";
+    ui_print "The installer detected that Stock ROM GApps are";
+    ui_print "already installed. If you are flashing over a";
+    ui_print "Nexus-compatible ROM there is no problem, but if";
+    ui_print "you are flashing over a custom ROM, you may want";
+    ui_print "to contact the developer to request the removal of";
+    ui_print "the included GApps. The installation will now";
+    ui_print "continue, but please be aware that any problems";
+    ui_print "that may occur depend on your ROM.";
+    ui_print " ";
+    install_note="${install_note}fornexus_open_gapps_msg"$'\n'; # make note that currently installed GApps are Stock ROM
   fi;
 else
   # User does NOT have a GApps package installed on their device
-  log "Current GApps Version" "NO GApps Installed";
-  log "Current Open GApps Package" "NO GApps Installed";
+  log "Current GApps Version" "No GApps Installed";
 
   # Use the opportunity of No GApps installed to check for potential ROM conflicts when deleting existing GApps files
   while read gapps_file; do
@@ -691,7 +750,7 @@ else # User is not using a gapps-config and we're doing the 'full monty'
 fi;
 
 # Configure default removal of Stock/AOSP apps - if we're installing Stock GApps
-if [ "$gapps_type" = "stock" ] || [ "$gapps_type" = "aroma" ] || [ "$gapps_type" = "fornexus" ]; then
+if [ "$gapps_type" = "stock" ] || [ "$gapps_type" = "aroma" ]; then
   for default_name in $default_aosp_remove_list; do
     eval "remove_${default_name}=true[default]";
   done;
@@ -709,7 +768,7 @@ if [ "$g_conf" ]; then
   for default_name in $default_aosp_remove_list; do
     if ( grep -qi "+$default_name" "$g_conf" ); then
       eval "remove_${default_name}=false[gapps-config]";
-    elif [ "$gapps_type" = "stock" ] || [ "$gapps_type" = "aroma" ] || [ "$gapps_type" = "fornexus" ]; then
+    elif [ "$gapps_type" = "stock" ] || [ "$gapps_type" = "aroma" ]; then
       aosp_remove_list="$aosp_remove_list$default_name"$'\n';
       if ( grep -qi "$default_name" "$g_conf" ); then
         eval "remove_${default_name}=true[gapps-config]";
@@ -728,7 +787,7 @@ if [ "$g_conf" ]; then
     fi;
   done;
 else
-  if [ "$gapps_type" = "stock" ] || [ "$gapps_type" = "aroma" ] || [ "$gapps_type" = "fornexus" ]; then
+  if [ "$gapps_type" = "stock" ] || [ "$gapps_type" = "aroma" ]; then
       aosp_remove_list=$default_aosp_remove_list;
   fi;
 fi;
@@ -900,24 +959,14 @@ tee -a "$build/META-INF/com/google/android/update-binary" > /dev/null <<'EOFILE'
   done;
 fi;
 
-EOFILE
-
-if [ "$VARIANT" = "fornexus" ]; then
-  tee -a "$build/META-INF/com/google/android/update-binary" > /dev/null <<'EOFILE'
 # Removing old Chrome libraries
 obsolete_libs_list="";
 for f in $(find /system/lib /system/lib64 -name 'libchrome*.so' 2>/dev/null); do
   obsolete_libs_list="${obsolete_libs_list}$f"$'\n';
 done;
 # Read in gapps removal list from file and append old Chrome libs
-full_removal_list=$(cat $gapps_removal_list)$'\n'"${obsolete_libs_list}";
-EOFILE
-else
-  echo '# Read in gapps removal list from file
-full_removal_list=$(cat $gapps_removal_list);'>> "$build/META-INF/com/google/android/update-binary"
-fi
+full_removal_list="$(cat $gapps_removal_list)"$'\n'"${obsolete_libs_list}";
 
-tee -a "$build/META-INF/com/google/android/update-binary" > /dev/null <<'EOFILE'
 # Clean up and sort our lists for space calculations and installation
 set_progress 0.04;
 gapps_list=$(echo "${gapps_list}" | sort | sed '/^$/d'); # sort GApps list & remove empty lines
@@ -950,13 +999,19 @@ for gapp_name in $core_gapps_list; do
   get_appsize "Core/$gapp_name";
   core_size=$((core_size + appsize));
 done;
-unzip -o "$ZIP" "Optional/keybd_lib.tar.xz" -d /tmp;
-keybd_lib_size=$(tar -tvJf "/tmp/Optional/keybd_lib.tar.xz" "keybd_lib" 2>/dev/null | awk 'BEGIN { app_size=0; } { file_size=$3; app_size=app_size+file_size; } END { printf "%.0f\n", app_size / 1024; }');
-rm -f "/tmp/Optional/keybd_lib.tar.xz";
 
-# Determine final size of Core Apps
+# Add Keyboard Lib size to core, if it exists
 if ( ! contains "$gapps_list" "keyboardgoogle" ); then
+  unzip -o "$ZIP" "Optional/keybd_lib.tar.xz" -d /tmp;
+  keybd_lib_size=$(tar -tvJf "/tmp/Optional/keybd_lib.tar.xz" "keybd_lib" 2>/dev/null | awk 'BEGIN { app_size=0; } { file_size=$3; app_size=app_size+file_size; } END { printf "%.0f\n", app_size / 1024; }');
+  rm -f "/tmp/Optional/keybd_lib.tar.xz";
   core_size=$((core_size + keybd_lib_size)); # Add Keyboard Lib size to core, if it exists
+fi
+
+# Do not touch AOSP keyboard if it's neither removed or replaced by Google's one
+if ( ! contains "$gapps_list" "keyboardgoogle" ) && ( ! contains "$gapps_removal_list" "keyboardstock" ) && [ "$skipkeybdlib" = "true" ]; then
+  reqd_list=$(echo "${reqd_list}" | grep -v "latinime.so");
+  remove_list=$(echo "${remove_list}" | grep -v "latinime.so");
 fi
 
 # Read and save system partition size details
@@ -1149,14 +1204,14 @@ fi;
 if ( contains "$gapps_list" "webviewgoogle" ); then
   mkdir -p "/system/app/WebViewGoogle/lib/'"$ARCH"'";
   ln -sf "/system/'"$LIBFOLDER"'/$WebView_lib_filename" "/system/app/WebViewGoogle/lib/'"$ARCH"'/$WebView_lib_filename"; # create required symlink' >> "$build/META-INF/com/google/android/update-binary"
-if [ "$FALLBACKARCH" != "$ARCH" ]; then #on 64bit we also need to add 32 bit libs
-  echo '  mkdir -p "/system/app/WebViewGoogle/lib/'"$FALLBACKARCH"'";
-  ln -sf "/system/lib/$WebView_lib_filename" "/system/app/WebViewGoogle/lib/'"$FALLBACKARCH"'/$WebView_lib_filename"; # create required symlink' >> "$build/META-INF/com/google/android/update-binary"
+if [ "$LIBFOLDER" = "lib64" ]; then #on 64bit we also need to add 32 bit libs
+  echo '  mkdir -p "/system/app/WebViewGoogle/lib/'"$fallback_arch"'";
+  ln -sf "/system/lib/$WebView_lib_filename" "/system/app/WebViewGoogle/lib/'"$fallback_arch"'/$WebView_lib_filename"; # create required symlink' >> "$build/META-INF/com/google/android/update-binary"
 fi
 echo '  # Add same code to backup script to insure symlinks are recreated on addon.d restore' >> "$build/META-INF/com/google/android/update-binary"
-if [ "$FALLBACKARCH" != "$ARCH" ]; then #on 64bit we also need to add 32 bit libs
-  echo '  sed -i "\:# Recreate required symlinks (from GApps Installer):a \    ln -sf \"/system/lib/$WebView_lib_filename\" \"/system/app/WebViewGoogle/lib/'"$FALLBACKARCH"'/$WebView_lib_filename\"" $bkup_tail;
-  sed -i "\:# Recreate required symlinks (from GApps Installer):a \    mkdir -p \"/system/app/WebViewGoogle/lib/'"$FALLBACKARCH"'\"" $bkup_tail;' >> "$build/META-INF/com/google/android/update-binary"
+if [ "$LIBFOLDER" = "lib64" ]; then #on 64bit we also need to add 32 bit libs
+  echo '  sed -i "\:# Recreate required symlinks (from GApps Installer):a \    ln -sf \"/system/lib/$WebView_lib_filename\" \"/system/app/WebViewGoogle/lib/'"$fallback_arch"'/$WebView_lib_filename\"" $bkup_tail;
+  sed -i "\:# Recreate required symlinks (from GApps Installer):a \    mkdir -p \"/system/app/WebViewGoogle/lib/'"$fallback_arch"'\"" $bkup_tail;' >> "$build/META-INF/com/google/android/update-binary"
 fi
 echo '  sed -i "\:# Recreate required symlinks (from GApps Installer):a \    ln -sf \"/system/'"$LIBFOLDER"'/$WebView_lib_filename\" \"/system/app/WebViewGoogle/lib/'"$ARCH"'/$WebView_lib_filename\"" $bkup_tail;
   sed -i "\:# Recreate required symlinks (from GApps Installer):a \    mkdir -p \"/system/app/WebViewGoogle/lib/'"$ARCH"'\"" $bkup_tail;
@@ -1188,7 +1243,7 @@ done;
 
 # Create final addon.d script in system
 bkup_header="#!/sbin/sh\n# \n# /system/addon.d/70-gapps.sh\n#\n. /tmp/backuptool.functions\n\nlist_files() {\ncat <<EOF"
-bkup_list="$bkup_list"$'\n'etc/g.prop; # add g.prop to backup list
+bkup_list="$bkup_list"$'\n'"etc/g.prop"; # add g.prop to backup list
 bkup_list=$(echo "${bkup_list}" | sort -u| sed '/^$/d'); # sort list & remove duplicates and empty lines
 mkdir -p /system/addon.d;
 echo -e "$bkup_header" > /system/addon.d/70-gapps.sh;

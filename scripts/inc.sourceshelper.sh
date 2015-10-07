@@ -15,13 +15,14 @@ LOWESTAPI_arm="19"
 LOWESTAPI_arm64="21"
 LOWESTAPI_x86="19"
 LOWESTAPI_x86_64="21"
+GOOGLECERT="Issuer: C=US, ST=C(A|alifornia), L=Mountain View, O=Google((|,) Inc(|.)|), OU=(Google((|,) Inc(|.)|)|Android), CN="
 
 getapkproperties(){
   apkproperties="$(aapt dump badging "$1" 2>/dev/null)"
   name="$(echo "$apkproperties" | grep "application-label:" | sed 's/application-label://g' | sed "s/'//g")"
-  package="$(echo "$apkproperties" | grep package: | awk '{print $2}' | sed s/name=//g | sed s/\'//g | awk '{print tolower($0)}')"
-  versionname="$(echo "$apkproperties" | grep "versionName" | awk '{print $4}' | sed s/versionName=// | sed "s/'//g")"
-  versioncode="$(echo "$apkproperties" | grep "versionCode=" | awk '{print $3}' | sed s/versionCode=// | sed "s/'//g")"
+  package="$(echo "$apkproperties" | awk '/package:/ {print $2}' | sed s/name=//g | sed s/\'//g | awk '{print tolower($0)}')"
+  versionname="$(echo "$apkproperties" | awk '/versionName=/ {print $4}' | sed s/versionName=// | sed "s/'//g")"
+  versioncode="$(echo "$apkproperties" | awk '/versionCode=/ {print $3}' | sed s/versionCode=// | sed "s/'//g")"
   sdkversion="$(echo "$apkproperties" | grep "sdkVersion:" | sed 's/sdkVersion://' | sed "s/'//g")"
   compatiblescreens="$(echo "$apkproperties" | grep "compatible-screens:")"
   native="$(echo "$apkproperties" | grep "native-code:" | sed 's/native-code://g' | sed "s/'//g")"
@@ -38,18 +39,32 @@ getapkproperties(){
   fi
 
   case $package in
+    "com.android.vending" |\
+    "com.android.vending.leanback" |\
+    "com.google.android.apps.mediashell.leanback" |\
+    "com.google.android.athome.remotecontrol" |\
+    "com.google.android.atv.customization" |\
     "com.google.android.backuptransport" |\
+    "com.google.android.contacts" |\
     "com.google.android.feedback" |\
     "com.google.android.gms" |\
+    "com.google.android.gms.leanback" |\
     "com.google.android.googlequicksearchbox" |\
     "com.google.android.gsf" |\
     "com.google.android.gsf.login" |\
+    "com.google.android.katniss.leanback" |\
+    "com.google.android.leanbacklauncher.leanback" |\
     "com.google.android.onetimeinitializer" |\
+    "com.google.android.packageinstaller" |\
     "com.google.android.partnersetup" |\
     "com.google.android.setupwizard" |\
+    "com.google.android.tungsten.setupwraith" |\
     "com.google.android.tag" |\
-    "com.google.android.talk" |\
-    "com.google.android.apps.walletnfcrel") type="priv-app";;
+    "com.google.android.tungsten.overscan" |\
+    "com.google.android.tungsten.setupwraith" |\
+    "com.google.android.tv.leanback" |\
+    "com.google.android.tv.remote" |\
+    "com.google.android.tv.remotepairing") type="priv-app";;
     *) type="app";;
   esac
 
@@ -82,4 +97,30 @@ getarchitectures() {
       architectures="$architectures$arch "
     done
   fi
+}
+
+verifyapk() {
+  notinzip=""
+  if importcert "$1"; then #always import, because sometimes new certificates are supplied but it would never be detected because the exitcode of jarsigner -verify would be 0, because the existing certificates would suffice
+    if ! jarsigner -verify -keystore "$CERTIFICATES/opengapps.keystore" -strict "$1" 1>/dev/null 2>&1; then
+      return 1 #contains files not signed by Google. APK not imported
+    fi
+  else
+    return 1 #no valid Google certificate. Certificate and APK not imported
+  fi
+
+  manifestlist="$(unzip -p "$1" "META-INF/MANIFEST.MF" | sed ':a;N;$!ba;s/\r\n //g' | tr -d '\r' | awk -F' ' '/Name:/ {print $NF}')"
+  ziplist="$(unzip -Z -1 "$1")"
+  notinzip="$(printf "%s\n%s\n" "$manifestlist" "$ziplist" | grep -vxF -e "META-INF/CERT.RSA" -e "META-INF/CERT.SF" -e "META-INF/MANIFEST.MF" | sort | uniq -u)"
+  if [ -n "$notinzip" ]; then
+    return 1 #files were mentioned in the signed manifest but are not present in the APK
+  fi
+}
+
+importcert() {
+  unzip -p "$1" "META-INF/CERT.RSA" | openssl pkcs7 -inform DER -print_certs -text | grep -q -E "$GOOGLECERT" || return 1 #Certificate is not issued by Google.
+  alias="$(unzip -p "$1" "META-INF/CERT.RSA" | openssl pkcs7 -inform DER -print_certs -text | awk -F' ' '/Serial Number:/ {if(NF==2){getline nextline;gsub(/[ \t:]/,"",nextline);print "ibase=16;",toupper(nextline)}else{print "ibase=10;",$(NF-1)}}' | bc)"
+  unzip -p "$1" "META-INF/CERT.RSA" | openssl pkcs7 -inform DER -print_certs -text | keytool -importcert -keystore "$CERTIFICATES/opengapps.keystore" -storepass "opengapps" -noprompt -alias "$alias" 1>/dev/null 2>&1
+  #echo "Certificate with alias $alias is signed by Google and added to the keystore"
+  return 0
 }

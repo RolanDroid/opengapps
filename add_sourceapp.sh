@@ -11,14 +11,17 @@
 #    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #    GNU General Public License for more details.
 #
+
+command -v realpath >/dev/null 2>&1 || { echo "realpath is required but it's not installed, aborting." >&2; exit 1; }
 TOP="$(realpath .)"
 SOURCES="$TOP/sources"
 SCRIPTS="$TOP/scripts"
+CERTIFICATES="$SCRIPTS/certificates"
 . "$SCRIPTS/inc.sourceshelper.sh"
-command -v aapt >/dev/null 2>&1 || { echo "aapt is required but it's not installed.  Aborting." >&2; exit 1; }
-command -v file >/dev/null 2>&1 || { echo "file is required but it's not installed.  Aborting." >&2; exit 1; }
-command -v install >/dev/null 2>&1 || { echo "coreutils is required but it's not installed.  Aborting." >&2; exit 1; } #coreutils also contains the basename command
-command -v unzip >/dev/null 2>&1 || { echo "unzip is required but it's not installed.  Aborting." >&2; exit 1; }
+. "$SCRIPTS/inc.tools.sh"
+
+# Check tools
+checktools aapt file coreutils jarsigner keytool openssl unzip
 
 installapk() {
   architecture="$1"
@@ -81,6 +84,19 @@ addapk() {
 
   getarchitectures "$apk"
   echo "Native code for architecture(s): $architectures"
+
+  if ! verifyapk "$apk"; then
+    if [ -n "$notinzip" ]; then
+      echo "ERROR: The following files were mentioned in the signed manifest of $1 but are not present in the APK:
+$notinzip"
+    else
+      echo "ERROR: $1 contains files or a certificate not signed by Google. APK not imported";
+    fi
+    echo "ERROR: Unsigned or incomplete APKs are not allowed. APK is not imported."
+    return 1
+  fi
+  echo "APK is complete, certificate is valid and signed by Google"
+
   #We manually check for each of our set of supported architectures
   #We assume NO universal packages for 32vs64 bit, so start with the 'highest' architectures first, if it matches one of those, we will NOT add it to a lower architecture
   if echo "$architectures" | grep -q "arm64"; then #no space, all arm64 types are valid

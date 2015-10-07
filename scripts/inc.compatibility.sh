@@ -17,8 +17,8 @@ cameracompatibilityhack(){
   fi
 }
 
-keyboardlibhack(){ #only on lollipop and higher
-  if [ "$API" -gt "19" ] && [ "$FALLBACKARCH" = "arm" ]; then
+keyboardlibhack(){ #only on lollipop arm and arm64
+  if [ "$API" -gt "19" ] && [ "$API" -lt "23" ] && { [ "$ARCH" = "arm" ] || [ "$ARCH" = "arm64" ];}; then
     gappsoptional="keybdlib $gappsoptional"
     REQDLIST="/system/lib/libjni_latinime.so
 /system/lib/libjni_latinimegoogle.so
@@ -27,7 +27,8 @@ keyboardlibhack(){ #only on lollipop and higher
 /system/app/LatinIME/lib/$ARCH/libjni_latinimegoogle.so"
     KEYBDLIBS='keybd_lib_filename1="libjni_latinimegoogle.so";
 keybd_lib_filename2="libjni_latinime.so";'
-    KEYBDINSTALLCODE='if ( ! contains "$gapps_list" "keyboardgoogle" ); then
+    # Do not touch AOSP keyboard if it's neither removed or replaced by Google's one
+    KEYBDINSTALLCODE='if ( ! contains "$gapps_list" "keyboardgoogle" ) && ( ! contains "$gapps_removal_list" "keyboardstock" ) && [ "$skipkeybdlib" = "false" ]; then
     extract_app "Optional/keybdlib";
     ln -sf "/system/'"$LIBFOLDER"'/$keybd_lib_filename1" "/system/'"$LIBFOLDER"'/$keybd_lib_filename2"; # create required symlink
     mkdir -p "/system/app/LatinIME/lib/'"$ARCH"'";
@@ -161,6 +162,8 @@ versionnamehack(){
   case "$package" in
     #the Drive/Docs/Sheets/Slides variate even the last two different digits of the versionName per DPI variant, so we only take the first 10 chars
     com.google.android.apps.docs*) versionname="$(echo "$versionname" | cut -c 1-10)";;
+    #the Fitness variate the last 3 digits per DPI variant
+    com.google.android.apps.fitness) versionname="$(echo "$versionname" | cut -c 1-7)";;
   esac
 }
 
@@ -172,7 +175,7 @@ taggoogle"
 }
 
 webviewhack(){
-  if [ "$API" -ge "22" ] || { [ "$API" -ge "21" ] && [ "$VARIANT" = "fornexus" ]; }; then #on AOSP we only support Webview on 5.1+, on fornexus 5.0+ is valid
+  if [ "$API" -ge "22" ]; then # On AOSP we only support Webview on 5.1+, stock Google ROMs support it on 5.0 too, but we're merging stock and fornexus
     gappsstock="$gappsstock
 webviewgoogle"
     stockremove="$stockremove
