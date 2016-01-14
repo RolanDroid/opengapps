@@ -21,7 +21,11 @@ ro.addon.open_version=$DATE
 }
 makegappsremovetxt(){
   gapps_remove=""
-  get_supported_variants "stock"
+  if [ "$API" -ge "22" ]; then
+    get_supported_variants "super"
+  else
+    get_supported_variants "stock"
+  fi
   get_gapps_list "$supported_variants"
   for gapp in $gapps_list; do
     get_package_info "$gapp"
@@ -29,6 +33,14 @@ makegappsremovetxt(){
       gapps_remove="/system/$packagetarget$REMOVALSUFFIX
 $gapps_remove"
     fi
+    for lib in $packagelibs; do
+      systemlibpath=""
+      getpathsystemlib "$lib"
+      for libpath in $systemlibpath; do
+        gapps_remove="/system/$libpath
+$gapps_remove"
+      done
+    done
     for file in $packagefiles; do
       if [ "$file" = "etc" ];then
         gapps_remove="$(find "$SOURCES/all/" -mindepth 3 -printf "%P\n" -name "*" | grep "etc/" | sed 's#^#/system/#' | sort | uniq)
@@ -41,6 +53,10 @@ $gapps_remove"
 $gapps_remove"
       fi
     done
+    for extraline in $packagegappsremove; do
+      gapps_remove="/system/$extraline
+$gapps_remove"
+    done
   done
   printf "%s" "$gapps_remove" | sort > "$build/gapps-remove.txt"
   EXTRACTFILES="$EXTRACTFILES gapps-remove.txt"
@@ -51,7 +67,7 @@ makeinstallerdata(){
 #    The Open GApps scripts are free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
 #    the Free Software Foundation, either version 3 of the License, or
-#    (at your option) any later version.
+#    (at your option) any later version, w/Open GApps installable zip exception.
 #
 #    These scripts are distributed in the hope that it will be useful,
 #    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -90,6 +106,7 @@ E_XZ=10; # No XZ support
 E_TAR=11; # No TAR support
 E_STDIN=12; # No TAR stdin support
 E_ROMVER=20; # Wrong ROM version
+E_NOBUILDPROP=25; #No build.prop or default.prop
 E_RECCOMPR=30; # Recovery without transparent compression
 E_NOSPACE=70; # Insufficient Space Available in System Partition
 E_NONOPEN=40; # NON Open GApps Currently Installed
@@ -98,6 +115,10 @@ E_ARCH=64; # Wrong Architecture Detected
 #                                             GApps List (Applications user can Select/Deselect)
 core_gapps_list="
 '"$gappscore"'
+";
+
+super_gapps_list="
+'"$gappssuper"'
 ";
 
 stock_gapps_list="
@@ -125,7 +146,7 @@ pico_gapps_list="
 ";
 # _____________________________________________________________________________________________________________________
 #                                             Default Stock/AOSP Removal List (Stock GApps Only)
-default_aosp_remove_list="
+default_stock_remove_list="
 '"$stockremove"'
 ";
 # _____________________________________________________________________________________________________________________
@@ -140,6 +161,7 @@ cmaudiofx
 cmaccount
 cmeleven
 cmfilemanager
+cmmusic
 cmsetupwizard
 cmupdater
 cmwallpapers
@@ -173,10 +195,17 @@ vendor/bundled-app/Boxer'"$REMOVALSUFFIX"'
 browser_list="
 app/Browser'"$REMOVALSUFFIX"'
 app/BrowserProviderProxy'"$REMOVALSUFFIX"'
+app/Chromium'"$REMOVALSUFFIX"'
 ";
 
 basicdreams_list="
 app/BasicDreams'"$REMOVALSUFFIX"'
+";
+
+# Must be used when GoogleCalculator is installed
+calculatorstock_list="
+app/Calculator'"$REMOVALSUFFIX"'
+app/ExactCalculator'"$REMOVALSUFFIX"'
 ";
 
 # Must be used when GoogleCalendar is installed
@@ -215,6 +244,10 @@ cmfilemanager_list="
 app/CMFileManager'"$REMOVALSUFFIX"'
 ";
 
+cmmusic_list="
+app/Music'"$REMOVALSUFFIX"'
+";
+
 cmupdater_list="
 priv-app/CMUpdater'"$REMOVALSUFFIX"'
 ";
@@ -228,9 +261,19 @@ cmwallpapers_list="
 app/CMWallpapers'"$REMOVALSUFFIX"'
 ";
 
+# Must be used when Google Contacts is installed
+contactsstock_list="
+priv-app/Contacts'"$REMOVALSUFFIX"'
+";
+
 dashclock_list="
 app/DashClock'"$REMOVALSUFFIX"'
 ";
+
+# Must be used when Google Dialer is installed
+#dialerstock_list="
+#priv-app/Dialer'"$REMOVALSUFFIX"'
+#";
 
 email_list="
 app/Email'"$REMOVALSUFFIX"'
@@ -299,11 +342,18 @@ app/LockClock'"$REMOVALSUFFIX"'
 ";
 
 mms_list="
+app/messaging'"$REMOVALSUFFIX"'
 priv-app/Mms'"$REMOVALSUFFIX"'
 ";
 
 noisefield_list="
 app/NoiseField'"$REMOVALSUFFIX"'
+";
+
+# Must be used when Google PackageInstaller is installed
+packageinstallerstock_list="
+app/PackageInstaller'"$REMOVALSUFFIX"'
+priv-app/PackageInstaller'"$REMOVALSUFFIX"'
 ";
 
 phasebeam_list="
@@ -358,9 +408,7 @@ app/VisualizationWallpapers'"$REMOVALSUFFIX"'
 webviewstock_list="
 app/webview'"$REMOVALSUFFIX"'
 app/WebView'"$REMOVALSUFFIX"'
-lib/$WebView_lib_filename
-lib64/$WebView_lib_filename
-";
+'"$webviewstocklibs"'";
 
 whisperpush_list="
 app/WhisperPush'"$REMOVALSUFFIX"'
@@ -389,6 +437,7 @@ other_list="
 /system/app/PartnerBookmarksProvider'"$REMOVALSUFFIX"'
 /system/app/PrebuiltBugleStub'"$REMOVALSUFFIX"'
 /system/app/PrebuiltKeepStub'"$REMOVALSUFFIX"'
+/system/app/Provision'"$REMOVALSUFFIX"'
 /system/app/QuickSearchBox'"$REMOVALSUFFIX"'
 /system/app/Vending'"$REMOVALSUFFIX"'
 /system/priv-app/GmsCore'"$REMOVALSUFFIX"'
@@ -403,6 +452,7 @@ other_list="
 
 # Apps from app that need to be installed in priv-app
 privapp_list="
+/system/app/ConfigUpdater'"$REMOVALSUFFIX"'
 /system/app/GoogleBackupTransport'"$REMOVALSUFFIX"'
 /system/app/GoogleFeedback'"$REMOVALSUFFIX"'
 /system/app/GoogleLoginService'"$REMOVALSUFFIX"'
@@ -449,8 +499,9 @@ arch_compat_msg="INSTALLATION FAILURE: This Open GApps package cannot be install
 camera_sys_msg="WARNING: Google Camera has/will not be installed as requested. Google Camera\ncan only be installed during a Clean Install or as an update to an existing\nGApps Installation.\n";
 camera_compat_msg="WARNING: Google Camera has/will not be installed as requested. Google Camera is\nNOT compatible with your device if installed in the system partition. Try\ninstalling from the Play Store instead.\n";
 faceunlock_msg="NOTE: FaceUnlock can only be installed on devices with a front facing camera.\n";
-googlenow_msg="WARNING: Google Now Launcher has/will not be installed as requested. Google \nSearch must be added to the GApps installation if you want to install the Google\nNow Launcher.\n";
-keyboard_sys_msg="WARNING: Google Keyboard has/will not be installed as requested. Google Keyboard\ncan only be installed during a Clean Install or as an update to an existing\nGApps Installation.\n";
+googlenow_msg="WARNING: Google Now Launcher has/will not be installed as requested. Google\nSearch must be added to the GApps installation if you want to install the Google\nNow Launcher.\n";
+projectfi_msg="WARNING: Project Fi has/will not be installed as requested. GCS must be\nadded to the GApps installation if you want to install the Project Fi app.\n";
+nobuildprop="INSTALLATION FAILURE: The installed ROM has no build.prop or default.prop\n";
 nokeyboard_msg="NOTE: The Stock/AOSP keyboard was NOT removed as requested to ensure your device\nwas not accidentally left with no keyboard installed. If this was intentional,\nyou can add 'Override' to your gapps-config to override this protection.\n";
 nolauncher_msg="NOTE: The Stock/AOSP Launcher was NOT removed as requested to ensure your device\nwas not accidentally left with no Launcher. If this was your intention, you can\nadd 'Override' to your gapps-config to override this protection.\n";
 nomms_msg="NOTE: The Stock/AOSP MMS app was NOT removed as requested to ensure your device\nwas not accidentally left with no way to receive text messages. If this WAS\nintentional, add 'Override' to your gapps-config to override this protection.\n";
@@ -467,6 +518,13 @@ del_conflict_msg="!!! WARNING !!! - Duplicate files were found between your ROM 
 no_tar_message="INSTALLATION FAILURE: The installer detected that your recovery does not support\ntar extraction. Please update your recovery or switch to another one like TWRP."
 no_xz_message="INSTALLATION FAILURE: The installer detected that your recovery does not support\nXZ decompression. Please update your recovery or switch to another one like TWRP."
 no_stdin_message="INSTALLATION FAILURE: The installer detected that your recovery\ndoes not support stdin for the tar binary. Please update your recovery\nor switch to another one like TWRP."
+
+nogooglecontacts_removal_msg="NOTE: The Stock/AOSP Contacts is not available on your\nROM (anymore), the Google equivalent will not be removed."
+#nogoogledialer_removal_msg="NOTE: The Stock/AOSP Dialer is not available on your\nROM (anymore), the Google equivalent will not be removed."
+nogooglekeyboard_removal_msg="NOTE: The Stock/AOSP Keyboard is not available on your\nROM (anymore), the Google equivalent will not be removed."
+nogooglepackageinstaller_removal_msg="NOTE: The Stock/AOSP Package Installer is not\navailable on your ROM (anymore), the Google equivalent will not be removed."
+nogoogletag_removal_msg="NOTE: The Stock/AOSP NFC Tag is not available on your\nROM (anymore), the Google equivalent will not be removed."
+nogooglewebview_removal_msg="NOTE: The Stock/AOSP WebView is not available on your\nROM (anymore), the Google equivalent will not be removed."
 EOFILE
   EXTRACTFILES="$EXTRACTFILES installer.data"
 }

@@ -34,37 +34,92 @@ buildfile() {
   if [ -z "$3" ]; then usearch="$ARCH"
   else usearch="$3"; fi #allows for an override
 
-  if [ -e "$SOURCES/$usearch/$2" ]; then #check if directory or file exists
-    if [ -d "$SOURCES/$usearch/$2" ]; then #if we are handling a directory
-      targetdir="$build/$1/$2"
+  if [ -e "$SOURCES/$usearch/$1" ]; then #check if directory or file exists
+    if [ -d "$SOURCES/$usearch/$1" ]; then #if we are handling a directory
+      targetdir="$build/$2/$1"
     else
-      targetdir="$build/$1/$(dirname "$2")"
+      targetdir="$build/$2/$(dirname "$1")"
     fi
     if [ "$usearch" != "$ARCH" ]; then
-      echo "INFO: Falling back from $ARCH to $usearch for file $2"
+      echo "INFO: Falling back from $ARCH to $usearch for file $1"
     fi
     install -d "$targetdir"
-    copy "$SOURCES/$usearch/$2" "$targetdir" #if we have a file specific to this architecture
+    copy "$SOURCES/$usearch/$1" "$targetdir" #if we have a file specific to this architecture
   else
     get_fallback_arch "$usearch"
     if [ "$usearch" != "$fallback_arch" ]; then
       buildfile "$1" "$2" "$fallback_arch"
     else
-      echo "ERROR: No fallback available. Failed to build file $2"
+      echo "ERROR: No fallback available. Failed to build file $1"
       exit 1
     fi
   fi
 }
 
-buildapp(){
+buildsystemlib() {
+  libname="$1"
+  liblocation="$2"
+  if [ -z "$3" ]; then usearch="$ARCH"
+  else usearch="$3"; fi #allows for an override
+
+  fallback=""
+  case "$libname" in
+    *+fallback) libname="$(echo "$libname" | sed 's/+fallback//')"
+    fallback="true";;
+  esac
+
+  if getsystemlibforapi "$libname" "$usearch" "$API"; then
+    printf "%44s %6s-%s\n" "$libname" "$usearch" "$api"
+    install -D -p "$sourcelib" "$build/$liblocation/$targetlib"
+  else
+    fallback="true"
+  fi
+  if [ -n "$fallback" ]; then
+    get_fallback_arch "$usearch"
+    if [ "$usearch" != "$fallback_arch" ]; then
+      buildsystemlib "$libname" "$liblocation" "$fallback_arch"
+    else
+      echo "ERROR: No fallback available. Failed to build lib $libname"
+      exit 1
+    fi
+  fi
+}
+
+getpathsystemlib(){
+  libname="$1"
+  if [ -z "$2" ]; then usearch="$ARCH"
+  else usearch="$2"; fi #allows for an override
+
+  fallback=""
+  case "$libname" in
+    *+fallback) libname="$(echo "$libname" | sed 's/+fallback//')"
+    fallback="true";;
+  esac
+
+  if getsystemlibforapi "$libname" "$usearch" "$API"; then
+    systemlibpath="$targetlib $systemlibpath"
+  else
+    fallback="true"
+  fi
+
+  if [ -n "$fallback" ]; then
+    get_fallback_arch "$usearch"
+    if [ "$usearch" != "$fallback_arch" ]; then
+      getpathsystemlib "$libname" "$fallback_arch"
+    fi
+  fi
+}
+
+buildapp() {
   package="$1"
   ziplocation="$2"
   targetlocation="$3"
   if [ -z "$4" ]; then usearch="$ARCH"
   else usearch="$4"; fi #allows for an override
 
-  if getsourceforapi "$package" "$usearch"
-  then
+  minapihack #Some packages need a minimal api level to maintain compatibility with the OS
+
+  if getapksforapi "$package" "$usearch" "$API" "$useminapi"; then
     baseversionname=""
     for dpivariant in $(echo "$sourceapks" | tr ' ' ''); do #we replace the spaces with a special char to survive the for-loop
       dpivariant="$(echo "$dpivariant" | tr '' ' ')" #and we place the spaces back again
@@ -80,7 +135,7 @@ buildapp(){
       if [ -z "$baseversionname" ]; then
         baseversionname=$versionname
         buildlib "$dpivariant" "$liblocation" "$usearch" #Use the libs from this baseversion
-        printf "%44s %6s %27s" "$package" "$usearch" "$baseversionname"
+        printf "%44s %6s-%s %27s" "$package" "$usearch" "$api" "$baseversionname"
       fi
       if [ "$versionname" = "$baseversionname" ]; then
         density=$(basename "$(dirname "$dpivariant")")
@@ -100,29 +155,78 @@ buildapp(){
     fi
   fi
 }
-getsourceforapi() {
-  #this functions finds the highest available acceptable api level for the given architeture
+
+getapksforapi() {
+  #this functions finds the highest available acceptable apk for a given api and architecture
+  #$1 package, $2 arch, $3 api, $4 minapi
+  if [ -z "$4" ]; then minapi="0"
+  else minapi="$4"; fi #specify minimal api
+
   if ! stat --printf='' "$SOURCES/$2/"*"app/$1" 2>/dev/null; then
     return 1 #appname is not there, error!?
   fi
 
+  sourceapks=""
+  OLDIFS="$IFS"
+  IFS="
+"  #We set IFS to newline here so that spaces can survive the for loop
   #sed copies filename to the beginning, to compare version, and later we remove it with cut
-  for foundapk in $(find $SOURCES/$2/*app/$1 -iname '*.apk' | sed 's!.*/\(.*\)!\1/&!' | sort -r -t/ -k1,1 | cut -d/ -f2- | tr ' ' ''); do #we replace the spaces with a special char to survive the for-loop
-    foundpath="$(dirname "$(dirname "$(echo "$foundapk" | tr '' ' ')")")" #and we place the spaces back again
+  maxsdkerrorapi=""
+  for foundapk in $(find $SOURCES/$2/*app/$1 -iname '*.apk' | sed 's!.*/\(.*\)!\1/&!' | sort -r -t/ -k1,1 | cut -d/ -f2-); do
+    foundpath="$(dirname "$(dirname "$foundapk")")"
     api="$(basename "$foundpath")"
-    if [ "$api" -le "$API" ]; then
+    if [ "$maxsdkerrorapi" = "$api" ]; then
+      continue #if we already know that this api hit the maxsdk error, do not try it again
+    fi
+    if [ "$api" -le "$3" ] && [ "$api" -ge "$minapi" ]; then
       #We need to keep them sorted
-      sourceapks="$(find "$foundpath" -name "*.apk" | sed 's!.*/\(.*\)!\1/&!' | sort -r -t/ -k1,1 | cut -d/ -f2-)"
+      sourceapks="$(find "$foundpath" -iname '*.apk' | sed 's!.*/\(.*\)!\1/&!' | sort -r -t/ -k1,1 | cut -d/ -f2-)"
+      for maxsdkapk in $sourceapks; do
+        maxsdk="$(aapt dump badging "$maxsdkapk" 2>/dev/null | grep -a "maxSdkVersion:" | sed 's/maxSdkVersion://' | sed "s/'//g")"
+        if [ -n "$maxsdk" ] && [ "$maxsdk" -lt "$3" ]; then
+          echo "WARNING: Newest APK found is incompatible with API level $3 for package $1 on $2, maxSdk: $maxsdk, falling back to higher SDK"
+          maxsdkerrorapi="$api"
+          continue 2
+        fi
+        break
+      done
       break
     fi
   done
+  IFS="$OLDIFS"
   if [ -z "$sourceapks" ]; then
-    echo "WARNING: No APK found compatible with API level $API for package $appname on $2, lowest found: $api"
+    echo "WARNING: No APK found compatible with API level $3 for package $1 on $2, lowest found: $api"
     return 1 #error
   fi
-  #$sourceapks has the useful returnvalue
+  #$sourceapks and $api have the useful returnvalues
   return 0 #return that it was a success
 }
+
+getsystemlibforapi() {
+  #this functions finds the highest available acceptable lib for a given api and architecture
+  #$1 libname, $2 arch, $3 api
+  sourcelib=""
+  OLDIFS="$IFS"
+  IFS="
+"  #We set IFS to newline here so that spaces can survive the for loop
+  for foundlib in $(find $SOURCES/$2/lib*/ $SOURCES/$2/vendor/lib*/ -iname "$1" | sort -r); do
+    api="$(basename "$(dirname "$foundlib")")"
+    if [ "$api" -le "$3" ]; then
+      sourcelib="$foundlib"
+      break
+    fi
+  done
+  IFS="$OLDIFS"
+  if [ -z "$sourcelib" ]; then
+    echo "WARNING: No lib found compatible with API level $3 for lib $1 on $2, lowest found: $api"
+    return 1 #error
+  fi
+  apilibpath="$(echo "$sourcelib" | awk -F'/' '{print $(NF-1)}')" # is api number
+  targetlib="$(echo "$sourcelib" | sed "s:^$SOURCES/$2/::" | sed "s:/$apilibpath/:/:g")" # lib/lib.so
+  #$sourcelib, $targetlib and $api have the useful returnvalues
+  return 0 #return that it was a success
+}
+
 buildapk() {
   sourceapk="$1"
   targetdir="$build/$2"
@@ -138,8 +242,17 @@ buildapk() {
   install -D "$sourceapk" "$targetapk"
   if [ "$API" -lt "23" ] && (unzip -qql "$targetapk" | grep -q "lib/"); then #only if pre-Marshmallow and the lib folder exists
     unzip -Z -1 "$targetapk" | grep "lib/" | grep -v "/crazy." | xargs zip -q -d "$targetapk" #delete all libs, except crazy-linked
+  elif [ "$API" -ge "23" ] && (unzip -qql "$targetapk" | grep -q "lib/"); then #Marshmallow needs (if any exist) libs to be stored without compression within the APK
+    unzip -q -o "$targetapk" -d "$targetdir" "lib/*"
+    zip -q -d "$targetapk" "lib/*" #delete all libs
+    CURRENTPWD="$(realpath .)" #if we ever switch to bash, make this a pushd-popd trick
+    cd "$targetdir"
+    zip -q -r -D -Z store -b "$targetdir" "$targetapk" "lib/" #no parameter for output and mode, we are in 'add and update existing' mode which is default. Lib files have to be stored without compression.
+    cd "$CURRENTPWD"
+    rm -rf "$targetdir/lib/"
   fi
 }
+
 buildlib() {
   sourceapk="$1"
   targetdir="$build/$2"
@@ -173,13 +286,11 @@ buildlib() {
     fallbacklibpath="lib/$fallback_arch" #notice that this sometimes gives 'illegal' paths like 'lib/all', but the path is not used in those situations
   fi
   if [ "$API" -lt "23" ]; then #libextraction is only necessary on pre-Marshmallow
-    if [ -n "$(unzip -Z -1 "$sourceapk" "$libsearchpath" 2>/dev/null)" ]
-    then
+    if [ -n "$(unzip -Z -1 "$sourceapk" "$libsearchpath" 2>/dev/null)" ]; then
       install -d "$targetdir/$libpath"
       unzip -qq -j -o "$sourceapk" "$libsearchpath" -x "lib/*/crazy.*" -d "$targetdir/$libpath" 2>/dev/null
     fi
-    if [ "$apkarch" != "$fallback_arch" ] && [ -n "$(unzip -Z -1 "$sourceapk" "$libfallbacksearchpath" 2>/dev/null)" ]
-    then
+    if [ "$apkarch" != "$fallback_arch" ] && [ -n "$(unzip -Z -1 "$sourceapk" "$libfallbacksearchpath" 2>/dev/null)" ]; then
       install -d "$targetdir/$fallbacklibpath"
       unzip -qq -j -o "$sourceapk" "$libfallbacksearchpath" -x "lib/*/crazy.*" -d "$targetdir/$fallbacklibpath" 2>/dev/null
     fi

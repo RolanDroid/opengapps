@@ -4,7 +4,7 @@ EOF
 # Backup/Restore using /sdcard if the installed GApps size plus a buffer for other addon.d backups (204800=200MB) is larger than /tmp
 installed_gapps_size_kb=$(grep "^installed_gapps_size_kb" /tmp/gapps.prop | cut -d= -f2)
 if [ ! "$installed_gapps_size_kb" ]; then
-  installed_gapps_size_kb=$(cd /system; du -ak "$(list_files)" | awk '{ i+=$1 } END { print i }')
+  installed_gapps_size_kb=$(cd /system; du -ak $(list_files) | awk '{ i+=$1 } END { print i }')
   echo "installed_gapps_size_kb=$installed_gapps_size_kb" >> /tmp/gapps.prop
 fi
 
@@ -47,19 +47,22 @@ case "$1" in
 
     # Remove 'required' apps (per installer.data)
 
+    # Remove 'user requested' apps (from gapps-config)
+
   ;;
   post-restore)
     # Recreate required symlinks (from GApps Installer)
 
     # Remove any empty folders we may have created during the removal process
-    for i in /system/app /system/priv-app /system/vendor/pittpatt /system/usr/srec; do
+    for i in /system/app /system/priv-app /system/vendor/pittpatt /system/usr/srec /system/vendor/pittpatt; do
         find $i -type d | xargs rmdir -p --ignore-fail-on-non-empty;
     done;
     # Fix ownership/permissions and clean up after backup and restore from /sdcard
+    find /system/vendor/pittpatt -type d -exec chown 0:2000 '{}' \; # Change pittpatt folders to root:shell per Google Factory Settings
     for i in $(list_files); do
-      busybox chown root.root "/system/$i"
-      busybox chmod 644 "/system/$i"
-      busybox chmod 755 $(busybox dirname "/system/$i")
+      chown root:root "/system/$i"
+      chmod 644 "/system/$i"
+      chmod 755 $(dirname "/system/$i")
     done
     rm -rf /sdcard/tmp-gapps
   ;;

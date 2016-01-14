@@ -19,7 +19,7 @@ LOWEST_API_arm := 19
 LOWEST_API_arm64 := 21
 LOWEST_API_x86 := 19
 LOWEST_API_x86_64 := 21
-VARIANTS := stock full mini micro nano pico aroma
+VARIANTS := super stock full mini micro nano pico aroma
 BUILDDIR := $(TOPDIR)/build
 CACHEDIR := $(TOPDIR)/cache
 OUTDIR := $(TOPDIR)/out
@@ -61,10 +61,14 @@ $(foreach api,$(APIS),\
 $(eval $(call make-gapps,$(platform)-$(api)))\
 ))
 
+tidycache:
+	@find "$(CACHEDIR)/"* -atime +7 -exec rm {} \;
+	@echo "$(tput setaf 2)Cache cleaned, archives not used for 7 days removed!$(tput sgr 0)"
+
 clean:
-	@rm -fr $(BUILDDIR)
+	@rm -fr "$(BUILDDIR)"
 	@echo "$(tput setaf 2)Build directory removed!$(tput sgr 0)"
 
 distclean: clean
-	@rm -fr $(CACHEDIR)
+	@rm -fr "$(CACHEDIR)"
 	@echo "$(tput setaf 2)Cache directory removed!$(tput sgr 0)"

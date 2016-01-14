@@ -16,6 +16,7 @@ command -v realpath >/dev/null 2>&1 || { echo "realpath is required but it's not
 TOP="$(realpath .)"
 SOURCES="$TOP/sources"
 SCRIPTS="$TOP/scripts"
+. "$SCRIPTS/inc.compatibility.sh"
 . "$SCRIPTS/inc.sourceshelper.sh"
 . "$SCRIPTS/inc.tools.sh"
 
@@ -27,6 +28,10 @@ createcommit(){
 
   if [ -n "$leanback" ]; then
     name="$name ($leanback)" #special leanback versions should be named like that in their commit
+  fi
+
+  if [ -n "$beta" ]; then
+    name="$name ($beta)" #beta versions should be named like that in their commit
   fi
 
   git rm -q -r --ignore-unmatch "$(dirname "$1")"

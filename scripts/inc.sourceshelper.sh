@@ -16,36 +16,44 @@ LOWESTAPI_arm64="21"
 LOWESTAPI_x86="19"
 LOWESTAPI_x86_64="21"
 GOOGLECERT="Issuer: C=US, ST=C(A|alifornia), L=Mountain View, O=Google((|,) Inc(|.)|), OU=(Google((|,) Inc(|.)|)|Android), CN="
+#IMPORTCERTS="" #if this value is set to non-zero, new certificates matching above regexp will be imported
 
 getapkproperties(){
   apkproperties="$(aapt dump badging "$1" 2>/dev/null)"
-  name="$(echo "$apkproperties" | grep "application-label:" | sed 's/application-label://g' | sed "s/'//g")"
+  name="$(echo "$apkproperties" | grep -a "application-label:" | sed 's/application-label://g' | sed "s/'//g")"
   package="$(echo "$apkproperties" | awk '/package:/ {print $2}' | sed s/name=//g | sed s/\'//g | awk '{print tolower($0)}')"
   versionname="$(echo "$apkproperties" | awk '/versionName=/ {print $4}' | sed s/versionName=// | sed "s/'//g")"
   versioncode="$(echo "$apkproperties" | awk '/versionCode=/ {print $3}' | sed s/versionCode=// | sed "s/'//g")"
-  sdkversion="$(echo "$apkproperties" | grep "sdkVersion:" | sed 's/sdkVersion://' | sed "s/'//g")"
-  compatiblescreens="$(echo "$apkproperties" | grep "compatible-screens:")"
-  native="$(echo "$apkproperties" | grep "native-code:" | sed 's/native-code://g' | sed "s/'//g")"
-  leanback="$(echo "$apkproperties" | grep "android.software.leanback" | awk -F [.\'] '{print $(NF-1)}')"
+  sdkversion="$(echo "$apkproperties" | grep -a "sdkVersion:" | sed 's/sdkVersion://' | sed "s/'//g")"
+  compatiblescreens="$(echo "$apkproperties" | grep -a "compatible-screens:'")" #the ' is added to prevent detection of lines that only have compatiblescreens but without any values
+  native="$(echo "$apkproperties" | grep -a "native-code:" | sed 's/native-code://g' | sed "s/'//g")"
+  leanback="$(echo "$apkproperties" | grep -a "android.software.leanback" | awk -F [.\'] '{print $(NF-1)}')"
   case "$versionname" in
     *leanback*) leanback="leanback";;
   esac
 
   if [ -n "$leanback" ]; then
     case "$package" in
+      *inputmethod*) ;; #if package is an inputmethod, it will have leanback as feature described, but we don't want it recognized as such
       *.leanback) ;; #if package already has leanback at the end of its name, we don't need to add it ourselves
       *) package="$package.$leanback";; #special leanback versions need a different packagename
     esac
   fi
 
+  sdkversionhacks
+
   case $package in
     "com.android.vending" |\
     "com.android.vending.leanback" |\
+    "com.google.android.androidforwork" |\
     "com.google.android.apps.mediashell.leanback" |\
+    "com.google.android.apps.gcs" |\
     "com.google.android.athome.remotecontrol" |\
     "com.google.android.atv.customization" |\
     "com.google.android.backuptransport" |\
+    "com.google.android.configupdater" |\
     "com.google.android.contacts" |\
+    "com.google.android.dialer" |\
     "com.google.android.feedback" |\
     "com.google.android.gms" |\
     "com.google.android.gms.leanback" |\
@@ -66,6 +74,16 @@ getapkproperties(){
     "com.google.android.tv.remote" |\
     "com.google.android.tv.remotepairing") type="priv-app";;
     *) type="app";;
+  esac
+
+  #we do this on purpose after the priv-app detection to emulate the priv-app of the normal app
+  if [ -n "$BETA" ]; then
+    package="$package.$BETA"
+  fi
+
+  beta="" #make sure value is initialized
+  case "$1" in
+    *.beta/*) beta="beta";; #report beta status as a property
   esac
 
   if [ "$compatiblescreens" = "" ]; then # we can't use -z here, because there can be a linecontrol character or such in it
@@ -101,7 +119,7 @@ getarchitectures() {
 
 verifyapk() {
   notinzip=""
-  if importcert "$1"; then #always import, because sometimes new certificates are supplied but it would never be detected because the exitcode of jarsigner -verify would be 0, because the existing certificates would suffice
+  if importcert "$1" "$2"; then #always import, because sometimes new certificates are supplied but it would never be detected because the exitcode of jarsigner -verify would be 0, because the existing certificates would suffice
     if ! jarsigner -verify -keystore "$CERTIFICATES/opengapps.keystore" -strict "$1" 1>/dev/null 2>&1; then
       return 1 #contains files not signed by Google. APK not imported
     fi
@@ -120,7 +138,15 @@ verifyapk() {
 importcert() {
   unzip -p "$1" "META-INF/CERT.RSA" | openssl pkcs7 -inform DER -print_certs -text | grep -q -E "$GOOGLECERT" || return 1 #Certificate is not issued by Google.
   alias="$(unzip -p "$1" "META-INF/CERT.RSA" | openssl pkcs7 -inform DER -print_certs -text | awk -F' ' '/Serial Number:/ {if(NF==2){getline nextline;gsub(/[ \t:]/,"",nextline);print "ibase=16;",toupper(nextline)}else{print "ibase=10;",$(NF-1)}}' | bc)"
-  unzip -p "$1" "META-INF/CERT.RSA" | openssl pkcs7 -inform DER -print_certs -text | keytool -importcert -keystore "$CERTIFICATES/opengapps.keystore" -storepass "opengapps" -noprompt -alias "$alias" 1>/dev/null 2>&1
-  #echo "Certificate with alias $alias is signed by Google and added to the keystore"
+  if ! keytool -list -keystore "$CERTIFICATES/opengapps.keystore" -storepass "opengapps" -noprompt -alias "$alias" 1>/dev/null 2>&1; then
+    if [ -n "$IMPORTCERTS" ]; then #set this variable in your environment if you want to permit the script to update the keystore
+      unzip -p "$1" "META-INF/CERT.RSA" | openssl pkcs7 -inform DER -print_certs -text | keytool -importcert -keystore "$CERTIFICATES/opengapps.keystore" -storepass "opengapps" -noprompt -alias "$alias" 1>/dev/null 2>&1
+      if [ -n "$2" ]; then #silent mode if value is set
+        echo "Certificate with alias $alias is signed by Google and added to the keystore"
+      fi
+    elif [ -z "$2" ]; then #only output if no silent mode value is set
+      echo "APK contains a new Google certificate not yet available in the keystore, please contact Open GApps maintainer to get it included"
+    fi
+  fi
   return 0
 }
